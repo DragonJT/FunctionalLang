@@ -124,8 +124,6 @@ class TextEditor{
         this.tokenizer = tokenizer;
     }
 
-
-
     Insert(text){
         var newText = this.text.substring(0, this.cursor) + text + this.text.substring(this.cursor);
         if(TextIsValid(newText, this.tokenizer)){
@@ -193,13 +191,16 @@ class Literal{
     GetTokenizer(){
         return new TkAnd(Array.from(this.literal).map(c=>new TkChar(c)))
     }
+
+    IsBranch(text){
+        return text == this.literal;
+    }
 }
 
 class Input{
     constructor(tokenizer, fillStyle){
         this.tokenizer = tokenizer;
         this.fillStyle = fillStyle;
-        console.log(this.tokenizer);
     }
 
     SetParseParent(parseParent){
@@ -214,7 +215,7 @@ class Input{
         tree.KeyDown(e);
     }
 
-    Draw(tree, astEditor, active){
+    Draw(astEditor, tree, active){
         tree.Draw(astEditor, this.fillStyle, active);        
     }
 
@@ -223,18 +224,38 @@ class Input{
     }
 }
 
-class Punctuation{
-    constructor(punctuation, fillStyle){
-        this.punctuation = punctuation;
+class Operator{
+    constructor(operator, fillStyle){
+        this.operator = operator;
         this.fillStyle = fillStyle;
+        this.type = operator;
+    }
+
+    SetParseParent(parseParent){
+        this.parseParent = parseParent;
+    }
+
+    Construct(parent){
+        return {parent, type:this.operator}
     }
 
     Draw(astEditor){
         var ctx = astEditor.ctx;
         ctx.fillStyle = this.fillStyle;
         astEditor.x+=astEditor.spaceLength;
-        ctx.fillText('=', astEditor.x, astEditor.y);
+        ctx.fillText(this.operator, astEditor.x, astEditor.y);
         astEditor.x+=ctx.measureText('=').width+astEditor.spaceLength;
+    }
+
+    KeyDown(tree, e){
+    }
+
+    GetTokenizer(){
+        return new TkAnd(Array.from(this.operator).map(c=>new TkChar(c)))
+    }
+
+    IsBranch(text){
+        return text == this.operator;
     }
 }
 
@@ -295,10 +316,10 @@ class Obj{
         return result;
     }
 
-    Draw(tree, astEditor, active){
+    Draw(astEditor, tree, active){
         for(var f of this.parsers){
             if(f.constructor.name == 'Field'){
-                f.value.Draw(tree['_'+f.name], astEditor, active && tree.selected == f.id);
+                f.value.Draw(astEditor, tree['_'+f.name], active && tree.selected == f.id);
             }
             else{
                 f.Draw(astEditor);
@@ -307,10 +328,7 @@ class Obj{
     }
 
     IsBranch(text){
-        if(this.parsers[0].constructor.name == 'Literal' && this.parsers[0].literal == text){
-            return true;
-        }
-        return false;
+        return this.parsers[0].IsBranch(text);
     }
 
     GetTokenizer(){
@@ -340,7 +358,7 @@ class Or{
             if(e.key == ' ' || e.key == 'Tab' || e.key == 'Enter'){
                 var branch = this.branches.find(b=>b.IsBranch(tree.textEditor.text));
                 if(branch){
-                    this.parseParent.Replace(tree,branch.Construct(tree.parent));
+                    this.parseParent.Replace(tree, branch.Construct(tree.parent));
                 }
                 e.key = undefined;
             }
@@ -354,16 +372,80 @@ class Or{
         }
     }
 
-    Draw(tree, astEditor, active){
+    Draw(astEditor, tree, active){
         if(tree.type == 'Unknown'){
             tree.textEditor.Draw(astEditor, options.colors.keyword, active);
         }
         else{
             var branch = this.branches.find(b=>b.type == tree.type);
-            branch.Draw(tree, astEditor, active);
+            branch.Draw(astEditor, tree, active);
         }
     }
 }
+
+class Expression{
+    constructor(element, operator){
+        this.element = element;
+        this.operator = operator;
+    }
+
+    Replace(old, _new){
+        var index = old.parent.tree.indexOf(old);
+        if(index>=0){
+            old.parent.tree[index] = _new;
+        }
+        else{
+            throw 'Replace: Cant find old.';
+        }
+    }
+
+    SetParseParent(parseParent){
+        this.parseParent = parseParent;
+        this.element.SetParseParent(this);
+        this.operator.SetParseParent(this);
+    }
+
+    Construct(parent){
+        var result = {parent, selected:0, tree:[]};
+        this.element.Construct(parent);
+        result.tree.push(this.element.Construct(result));
+        return result;
+    }
+
+    KeyDown(tree, e){
+        if(tree.selected%2==0){
+            this.element.KeyDown(tree.tree[tree.selected], e);
+            if(e.key == ' ' || e.key == 'Tab'){
+                tree.tree.push(this.operator.Construct(tree));
+                tree.selected++;
+                e.key = undefined;
+            }
+        }
+        else{
+            this.operator.KeyDown(tree.tree[tree.selected], e);
+            if(e.key == ' ' || e.key == 'Tab'){
+                tree.tree.push(this.element.Construct(tree));
+                tree.selected++;
+                e.key = undefined;
+            }
+        }
+        
+    }
+
+    Draw(astEditor, tree, active){
+        for(var i=0;i<tree.tree.length;i+=2){
+            this.element.Draw(astEditor, tree.tree[i], active && tree.selected == i);
+            if(i+1 < tree.tree.length){
+                this.operator.Draw(astEditor, tree.tree[i+1], active && tree.selected == i+1);
+            }
+        }
+    }
+
+    GetTokenizer(){
+        return this.element.GetTokenizer();
+    }
+}
+
 
 class Multiple{
     constructor(element){
@@ -401,9 +483,9 @@ class Multiple{
         }
     }
 
-    Draw(tree, astEditor, active){
+    Draw(astEditor, tree, active){
         for(var i=0;i<tree.tree.length;i++){
-            this.element.Draw(tree.tree[i], astEditor, active && tree.selected == i);
+            this.element.Draw(astEditor, tree.tree[i], active && tree.selected == i);
             astEditor.NewLine();
         }
     }
@@ -446,7 +528,7 @@ class ASTEditor{
         this.x = 0;
         this.y = this.fontSize;
 
-        this.parseTree.Draw(this.tree, this, true);
+        this.parseTree.Draw(this, this.tree, true);
         this.x=0;
         this.y+=this.lineSize;
     }
@@ -467,16 +549,18 @@ var varname = new TkAnd([character, new TkWhile(new TkOr([character, digit], 0))
 
 var number = new Input(new TkOr([float, int]), options.colors.number);
 var _name = new Input(varname, options.colors.varname);
+var operators = new Or([new Operator('+', options.colors.operator), new Operator('-', options.colors.operator)]);
+var expression = new Expression(number, operators);
 
 var _var = new Obj('var', [
     new Literal('var', options.colors.keyword), 
     new Field('name', _name),
-    new Punctuation('=', options.colors.operator), 
-    new Field('expression', number)]);
+    new Operator('=', options.colors.operator), 
+    new Field('expression', expression)]);
 
 var _return = new Obj('return', [
     new Literal('return', options.colors.keyword), 
-    new Field('expression', number)
+    new Field('expression', expression)
 ]);
 
 var statements = new Multiple(new Or([_var, _return]));
