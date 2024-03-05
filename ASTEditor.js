@@ -4,27 +4,148 @@ const options = {
         background:'rgb(45,45,45)',
         varname:'rgb(200,150,255)',
         keyword:'rgb(50,200,255',
+        number:'rgb(255,80,80)',
         operator:'rgb(255,255,255)',
     },
     fontSize:20,
 }
 
-class TextEditor{
-    constructor(text, cursor){
-        this.text = text;
-        this.cursor = cursor;
+const TkResult = {
+    False:0,
+    OutOfBounds:1,
+    True:2,
+}
+
+class TokenReader{
+    constructor(code, index){
+        this.code = code;
+        this.index = index;
+    }
+}
+
+class TkRange{
+    constructor(min, max){
+        this.min = min;
+        this.max = max;
     }
 
+    IsValid(t){
+        if(t.index>=t.code.length){
+            return TkResult.OutOfBounds;
+        }
+        if(t.code[t.index]>=this.min && t.code[t.index]<=this.max){
+            t.index++;
+            return TkResult.True;
+        }
+        return TkResult.False;
+    }
+}
+
+class TkChar{
+    constructor(char){
+        this.char = char;
+    }
+
+    IsValid(t){
+        if(t.index>=t.code.length){
+            return TkResult.OutOfBounds;
+        }
+        if(t.code[t.index]==this.char){
+            t.index++;
+            return TkResult.True;
+        }
+        return TkResult.False;
+    }
+}
+
+class TkOr{
+    constructor(branches){
+        this.branches = branches;
+    }
+
+    IsValid(t){
+        var index = t.index;
+        for(var b of this.branches){
+            t.index = index;
+            var result = b.IsValid(t);
+            if(result!=TkResult.False){
+                return result;
+            }
+        }
+        return TkResult.False;
+    }
+}
+
+class TkWhile{
+    constructor(element, minLength){
+        this.element = element;
+        this.minLength = minLength;
+    }
+
+    IsValid(t){
+        var start = t.index;
+        while(true){
+            var result = this.element.IsValid(t);
+            if(result==TkResult.OutOfBounds){
+                return TkResult.OutOfBounds;
+            }
+            if(result == TkResult.False){
+                return t.index - start >= this.minLength ? TkResult.True: TkResult.False;
+            }
+        }
+    }
+}
+
+class TkAnd{
+    constructor(elements){
+        this.elements = elements;
+    }
+
+    IsValid(t){
+        for(var e of this.elements){
+            var result = e.IsValid(t);
+            if(result != TkResult.True){
+                return result;
+            }
+        }
+        return TkResult.True;
+    }
+}
+
+function TextIsValid(text, tokenizer){
+    var t = new TokenReader(text, 0);
+    return tokenizer.IsValid(t)!=TkResult.False && t.index==text.length;
+}
+
+class TextEditor{
+    constructor(text, cursor, tokenizer){
+        this.text = text;
+        this.cursor = cursor;
+        this.tokenizer = tokenizer;
+    }
+
+
+
     Insert(text){
-        this.text = this.text.substring(0, this.cursor) + text + this.text.substring(this.cursor);
-        this.cursor+=text.length;
+        var newText = this.text.substring(0, this.cursor) + text + this.text.substring(this.cursor);
+        if(TextIsValid(newText, this.tokenizer)){
+            this.text = newText;
+            this.cursor+=text.length;
+            return true;
+        }
+        return false;
     }
 
     Backspace(){
         if(this.cursor>0){
-            this.text = this.text.substring(0, this.cursor-1) + this.text.substring(this.cursor);
-            this.cursor--;
+            var newText = this.text.substring(0, this.cursor-1) + this.text.substring(this.cursor);
+            if(TextIsValid(newText, this.tokenizer)){
+                this.text = newText;
+                this.cursor--;
+                return true;
+            }
         }
+        return false;
     }
 
     KeyDown(e){
@@ -32,12 +153,14 @@ class TextEditor{
             return;
         }
         if(e.key == 'Backspace'){
-            this.Backspace();
-            e.key = undefined;
+            if(this.Backspace()){
+                e.key = undefined;
+            }
         }
-        else if(e.key.length == 1 && e.key!=' '){
-            this.Insert(e.key);
-            e.key = undefined;
+        else if(e.key.length == 1){
+            if(this.Insert(e.key)){
+                e.key = undefined;
+            }
         }
     }
 
@@ -66,11 +189,17 @@ class Literal{
         ctx.fillText(this.literal, astEditor.x, astEditor.y);
         astEditor.x+=ctx.measureText(this.literal).width+astEditor.spaceLength;
     }
+
+    GetTokenizer(){
+        return new TkAnd(Array.from(this.literal).map(c=>new TkChar(c)))
+    }
 }
 
-class Varname{
-    constructor(fillStyle){
+class Input{
+    constructor(tokenizer, fillStyle){
+        this.tokenizer = tokenizer;
         this.fillStyle = fillStyle;
+        console.log(this.tokenizer);
     }
 
     SetParseParent(parseParent){
@@ -78,7 +207,7 @@ class Varname{
     }
 
     Construct(){
-        return new TextEditor('', 0)
+        return new TextEditor('', 0, this.tokenizer);
     }
 
     KeyDown(tree, e){
@@ -87,6 +216,10 @@ class Varname{
 
     Draw(tree, astEditor, active){
         tree.Draw(astEditor, this.fillStyle, active);        
+    }
+
+    GetTokenizer(){
+        return this.tokenizer;
     }
 }
 
@@ -109,6 +242,10 @@ class Field{
     constructor(name, value){
         this.name = name;
         this.value = value;
+    }
+
+    GetTokenizer(){
+        return this.value.GetTokenizer();
     }
 }
 
@@ -175,11 +312,16 @@ class Obj{
         }
         return false;
     }
+
+    GetTokenizer(){
+        return this.parsers[0].GetTokenizer();
+    }
 }
 
 class Or{
     constructor(branches){
         this.branches = branches;
+        this.tokenizer = new TkOr(branches.map(b=>b.GetTokenizer()));
     }
 
     SetParseParent(parseParent){
@@ -190,7 +332,7 @@ class Or{
     }
 
     Construct(parent){
-        return  {parent, type:'Unknown', textEditor:new TextEditor('', 0)};
+        return  {parent, type:'Unknown', textEditor:new TextEditor('', 0, this.tokenizer)};
     }
 
     KeyDown(tree, e){
@@ -265,6 +407,10 @@ class Multiple{
             astEditor.NewLine();
         }
     }
+
+    GetTokenizer(){
+        return this.element.GetTokenizer();
+    }
 }
 
 function CreateCanvas(){
@@ -312,15 +458,25 @@ class ASTEditor{
     }
 }
 
+var digit = new TkRange('0', '9');
+var character = new TkOr([new TkRange('a', 'z'), new TkRange('A', 'Z'), new TkRange('_')]);
+var dot = new TkChar('.');
+var float = new TkAnd([new TkWhile(digit, 1), dot, new TkWhile(digit, 0)]);
+var int = new TkWhile(digit, 1);
+var varname = new TkAnd([character, new TkWhile(new TkOr([character, digit], 0))]);
+
+var number = new Input(new TkOr([float, int]), options.colors.number);
+var _name = new Input(varname, options.colors.varname);
+
 var _var = new Obj('var', [
     new Literal('var', options.colors.keyword), 
-    new Field('name', new Varname(options.colors.varname)),
+    new Field('name', _name),
     new Punctuation('=', options.colors.operator), 
-    new Field('expression', new Varname(options.colors.varname))]);
+    new Field('expression', number)]);
 
 var _return = new Obj('return', [
     new Literal('return', options.colors.keyword), 
-    new Field('expression', new Varname(options.colors.varname))
+    new Field('expression', number)
 ]);
 
 var statements = new Multiple(new Or([_var, _return]));
