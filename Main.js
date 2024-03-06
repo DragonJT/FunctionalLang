@@ -1,7 +1,6 @@
 var code = `
-X(a) { a - 6 }
-Test(a, b) { X(a) * b }
-Test(3, 5) + X(5)
+Pow(count) { count > 0 ? Pow(count - 1) * 2 : 2 }
+Pow(5)
 `; 
 
 function Tokenizer(code){
@@ -93,8 +92,10 @@ class Expression{
             '-':'sub',
             '/':'div',
             '*':'mul',
-        }
-        const operatorGroups = [['+', '-'], ['*', '/']];
+            '<':'lt',
+            '>':'gt',
+        };
+        const operatorGroups = [['?'], [':'], ['<', '>'], ['+', '-'], ['*', '/']];
 
         function EmitExpression(tokens){
             function IsDigit(c){
@@ -107,6 +108,12 @@ class Expression{
                     if(operators.includes(t)){
                         var left = EmitExpression(tokens.slice(0, i));
                         var right = EmitExpression(tokens.slice(i+1));
+                        if(t == '?'){
+                            return [...left, Opcode.if, Blocktype.f32, ...right, Opcode.end];
+                        }
+                        if(t == ':'){
+                            return [...left, Opcode.else, ...right];
+                        }
                         return [...left, ...right, Opcode['f32_'+operatorsToWasm[t]]];
                     }
                 }
@@ -119,7 +126,7 @@ class Expression{
                     return [Opcode.call, ...unsignedLEB128(funcID)];
                 }
                 else{
-                    throw 'Cant find function or paramter: '+t;
+                    throw 'Cant find function or paramter: '+name;
                 }
             }
 

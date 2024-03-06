@@ -110,6 +110,7 @@ const unsignedLEB128 = (n) => {
 const Blocktype = {
     void: 0x40,
     i32: 0x7f,
+    f32: 0x7d,
 }
 
 // https://webassembly.github.io/spec/core/binary/types.html
