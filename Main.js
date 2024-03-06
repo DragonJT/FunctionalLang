@@ -1,6 +1,7 @@
 var code = `
-Test { 2 * 12 }
-Test + 5
+X(a) { a - 6 }
+Test(a, b) { X(a) * b }
+Test(3, 5) + X(5)
 `; 
 
 function Tokenizer(code){
@@ -11,7 +12,7 @@ function Tokenizer(code){
         split=true;
     }
 
-    const operators = '{}+-*/()';
+    const operators = '{}+-*/(),<>';
     const whitespace = ' \t\n\r';
     var tokens = [];
     var split = true;
@@ -36,6 +37,29 @@ function Tokenizer(code){
     return tokens;
 }
 
+function SplitByComma(tokens){
+    var start = 0;
+    var values = [];
+    for(var i=0;i<tokens.length;i++){
+        if(typeof tokens[i] == 'string' && tokens[i] == ','){
+            values.push(tokens.slice(start, i));
+            start=i+1;
+        }
+    }
+    var last = tokens.slice(start);
+    if(last.length>0){
+        values.push(last);
+    }
+    return values;
+}
+
+class Parameter{
+    constructor(id, name){
+        this.id = id;
+        this.name = name;
+    }
+}
+
 class Func{
     constructor(_export, name, parameters, body){
         this.isFunc = true;
@@ -48,7 +72,8 @@ class Func{
     ToWasm(){
         var last = this.body[this.body.length-1];
         if(last.isExpression){
-            return WasmFunc(this.export, [Valtype.f32], this.name, [], [], last.GetCodeBytes());
+            var wasmParamters = this.parameters.map(p=>Valtype.f32);
+            return WasmFunc(this.export, [Valtype.f32], this.name, wasmParamters, [], last.GetCodeBytes(this.parameters));
         }
         else{
             throw 'Expecting expression as return: '+JSON.stringify(last);
@@ -62,7 +87,7 @@ class Expression{
         this.tokens = tokens;
     }
 
-    GetCodeBytes(){
+    GetCodeBytes(parameters){
         const operatorsToWasm = {
             '+':'add',
             '-':'sub',
@@ -88,6 +113,25 @@ class Expression{
                 return undefined;
             }
     
+            function Call(name){
+                var funcID = functions.findIndex(f=>f.name == name);
+                if(funcID>=0){
+                    return [Opcode.call, ...unsignedLEB128(funcID)];
+                }
+                else{
+                    throw 'Cant find function or paramter: '+t;
+                }
+            }
+
+            function GetArgs(tokens){
+                var argExpressions = SplitByComma(tokens);
+                var output = [];
+                for(var a of argExpressions){
+                    output.push(...EmitExpression(a));
+                }
+                return output;
+            }
+
             if(tokens.length == 1){
                 var t = tokens[0];
                 if(typeof t == 'string'){
@@ -95,18 +139,24 @@ class Expression{
                         return [Opcode.f32_const, ...ieee754(parseFloat(t))];
                     }
                     else{
-                        var funcID = functions.findIndex(f=>f.name == t);
-                        if(funcID>=0){
-                            return [Opcode.call, ...unsignedLEB128(funcID)];
+                        var parameter = parameters.find(p=>p.name == t);
+                        if(parameter){
+                            return [Opcode.get_local, ...unsignedLEB128(parameter.id)];
                         }
                         else{
-                            console.log(functions);
-                            throw 'Cant find function: '+t;
+                            return Call(t);
                         }
                     }
                 }
                 else{
                     throw 'Unexpected token: '+JSON.stringify(t);
+                }
+            }
+            else if(tokens.length == 2){
+                var t1 = tokens[0];
+                var t2 = tokens[1];
+                if(typeof t1 == 'string' && !IsDigit(t1) && typeof t2 == 'object' && t2.braces == '()'){
+                    return [...GetArgs(t2.value), ...Call(t1)];
                 }
             }
             else{
@@ -177,6 +227,22 @@ function Parse(tokens){
     
     var groupedTokens = ParseGroups(ParseBraces(tokens));
 
+    function ParseParameters(tokens){
+        var splitTokens = SplitByComma(tokens);
+        var parameters = [];
+        var id = 0;
+        for(var t of splitTokens){
+            if(t.length == 1 && typeof t[0] == 'string'){
+                parameters.push(new Parameter(id, t[0]));
+                id++;
+            }
+            else{
+                throw 'invalid parameter: '+JSON.stringify(t);
+            }
+        }
+        return parameters;
+    }
+
     function ParseTree(groupedTokens){
         var tree = [];
         for(var i=0;i<groupedTokens.length;i++){
@@ -184,7 +250,7 @@ function Parse(tokens){
             var lastGroup = group[group.length-1];
             if(typeof(lastGroup) == 'object' && lastGroup.braces == '{}'){
                 var _export = false;
-                var parameters;
+                var parameters = [];
                 var name;
                 var ii = 0;
                 if(typeof(group[ii]) == 'string' && group[ii] == 'export'){
@@ -196,7 +262,7 @@ function Parse(tokens){
                     ii++;
                 }
                 if(typeof(group[ii]) == 'object' && group[ii].braces == '()'){
-                    parameters = group[ii].value;
+                    parameters = ParseParameters(group[ii].value);
                     ii++;
                 }
                 if(ii == group.length-1){
