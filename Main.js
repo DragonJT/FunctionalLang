@@ -1,7 +1,6 @@
 var code = `
-Test{ 3 }
-X { Test + 2 }
-Test + X
+Test { 2 * 12 }
+Test + 5
 `; 
 
 function Tokenizer(code){
@@ -45,6 +44,16 @@ class Func{
         this.parameters = parameters;
         this.body = body;
     }
+
+    ToWasm(){
+        var last = this.body[this.body.length-1];
+        if(last.isExpression){
+            return WasmFunc(this.export, [Valtype.f32], this.name, [], [], last.GetCodeBytes());
+        }
+        else{
+            throw 'Expecting expression as return: '+JSON.stringify(last);
+        }
+    }
 }
 
 class Expression{
@@ -52,6 +61,68 @@ class Expression{
         this.isExpression = true;
         this.tokens = tokens;
     }
+
+    GetCodeBytes(){
+        const operatorsToWasm = {
+            '+':'add',
+            '-':'sub',
+            '/':'div',
+            '*':'mul',
+        }
+        const operatorGroups = [['+', '-'], ['*', '/']];
+
+        function EmitExpression(tokens){
+            function IsDigit(c){
+                return c>='0' && c<='9';
+            }
+    
+            function TrySplit(operators){
+                for(var i=tokens.length-1;i>=0;i--){
+                    var t = tokens[i];
+                    if(operators.includes(t)){
+                        var left = EmitExpression(tokens.slice(0, i));
+                        var right = EmitExpression(tokens.slice(i+1));
+                        return [...left, ...right, Opcode['f32_'+operatorsToWasm[t]]];
+                    }
+                }
+                return undefined;
+            }
+    
+            if(tokens.length == 1){
+                var t = tokens[0];
+                if(typeof t == 'string'){
+                    if(IsDigit(t[0])){
+                        return [Opcode.f32_const, ...ieee754(parseFloat(t))];
+                    }
+                    else{
+                        var funcID = functions.findIndex(f=>f.name == t);
+                        if(funcID>=0){
+                            return [Opcode.call, ...unsignedLEB128(funcID)];
+                        }
+                        else{
+                            console.log(functions);
+                            throw 'Cant find function: '+t;
+                        }
+                    }
+                }
+                else{
+                    throw 'Unexpected token: '+JSON.stringify(t);
+                }
+            }
+            else{
+                for(var operators of operatorGroups){
+                    var output = TrySplit(operators);
+                    if(output){
+                        return output;
+                    }
+                }
+            }
+            throw "Unexpected expression:"+JSON.stringify(tokens);
+        }
+        return [...EmitExpression(this.tokens), Opcode.end];
+        
+    }
+    
 }
 
 function Parse(tokens){
@@ -146,19 +217,28 @@ function Parse(tokens){
 }
 
 var tree = Parse(Tokenizer(code));
-var wasmFuncs = [];
 
+var functions = [];
+function FindFunctions(tree){
+    for(var f of tree){
+        if(f.isFunc){
+            functions.push(f);
+            if(f.body){
+                FindFunctions(f.body);
+            }
+        }
+    }    
+}
+FindFunctions(tree);
+functions.push(new Func(true, '__Init__', [], [tree[tree.length-1]]));
 
+wasmFuncs = functions.map(f=>f.ToWasm());
 var importObject = {env:{}};
 importObject.env.memory = new WebAssembly.Memory({ initial: 10, maximum: 10 });
 
-var wasmBytes = Wasm([
-    WasmFunc(true, [Valtype.i32], 'Main', [Valtype.i32], [], [
-        Opcode.get_local, ...signedLEB128(0), Opcode.get_local, ...signedLEB128(0), Opcode.i32_mul, Opcode.end
-    ])
-]);
+var wasmBytes = Wasm(wasmFuncs);
 WebAssembly.instantiate(wasmBytes, importObject).then(
     (obj) => {
-        console.log(obj.instance.exports.Main(10));
+        console.log(obj.instance.exports.__Init__());
     }
 );
