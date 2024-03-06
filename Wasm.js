@@ -1,21 +1,16 @@
-/*var importObject = {env:{}};
+/* IMPORT FUNCTIONS REMOVED...
+
+var importObject = {env:{}};
 importObject.env.memory = new WebAssembly.Memory({ initial: 10, maximum: 10 });
-importObject.env.Print = console.log;
 
 var wasmBytes = Wasm([
-    WasmImportFunc([], 'Print', [Valtype.i32])
-], 
-[
-    WasmFunc(false, [], 'Test', [Valtype.i32], [], [
-        Opcode.get_local, ...unsignedLEB128(0), Opcode.get_local, ...unsignedLEB128(0), Opcode.i32_mul, Opcode.call, ...unsignedLEB128(0), Opcode.end
-    ]),
-    WasmFunc(true, [], 'Main', [Valtype.i32], [], [
-        Opcode.get_local, ...signedLEB128(0), Opcode.call, ...unsignedLEB128(1), Opcode.end
+    WasmFunc(true, [Valtype.i32], 'Main', [Valtype.i32], [], [
+        Opcode.get_local, ...signedLEB128(0), Opcode.get_local, ...signedLEB128(0), Opcode.i32_mul, Opcode.end
     ])
 ]);
 WebAssembly.instantiate(wasmBytes, importObject).then(
     (obj) => {
-        obj.instance.exports.Main(10);
+        console.log(obj.instance.exports.Main(10));
     }
 );*/
 
@@ -131,12 +126,7 @@ function WasmFunc(_export, returnType, name, parameterTypes, locals, codeBytes){
     return {export:_export, returnType, name, parameterTypes, locals, codeBytes};
 }
 
-function WasmImportFunc(returnType, name, parameterTypes){
-    return {returnType, name, parameterTypes};
-}
-
-function Wasm(importFunctions, functions){
-    console.log(functions);
+function Wasm(functions){
     const flatten = (arr) => [].concat.apply([], arr);
     
     // https://webassembly.github.io/spec/core/binary/modules.html#sections
@@ -210,31 +200,22 @@ function Wasm(importFunctions, functions){
                 ...encodeVector(f.returnType),
             ]);
         }
-        return createSection(Section.type, encodeVector([...EmitTypes(importFunctions), ...EmitTypes(functions)]));
+        return createSection(Section.type, encodeVector([...EmitTypes(functions)]));
     }
     
     function EmitImportSection(){
-        function EmitImportFunctions(){
-            return importFunctions.map((f, i)=>[
-                ...encodeString("env"),
-                ...encodeString(f.name),
-                ExportType.func,
-                ...unsignedLEB128(i)
-            ]);
-        }
-    
-        return createSection(Section.import, encodeVector([...EmitImportFunctions(), memoryImport]));
+        return createSection(Section.import, encodeVector([memoryImport]));
     }
     
     function EmitFuncSection(){
-        return createSection(Section.func, encodeVector(functions.map((_,i)=>unsignedLEB128(i+importFunctions.length))));
+        return createSection(Section.func, encodeVector(functions.map((_,i)=>unsignedLEB128(i))));
     }
     
     function EmitExportSection(){
         var exportBytes = [];
         for(var i=0;i<functions.length;i++){
             if(functions[i].export){
-                exportBytes.push([...encodeString(functions[i].name), ExportType.func, ...unsignedLEB128(i+importFunctions.length)]);
+                exportBytes.push([...encodeString(functions[i].name), ExportType.func, ...unsignedLEB128(i)]);
             }
         }
         return createSection(
