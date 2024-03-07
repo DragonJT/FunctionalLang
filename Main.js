@@ -124,10 +124,16 @@ class BinaryOp{
         };
 
         if(this.op == '?'){
-            return [...this.left.ToWasm(), Opcode.if, Blocktype.f32, ...this.right.ToWasm(), Opcode.end];
+            if(this.right.op == ':'){
+                return [...this.left.ToWasm(), Opcode.if, Blocktype.f32, 
+                    ...this.right.left.ToWasm(), Opcode.else, ...this.right.right.ToWasm(), Opcode.end];
+            }
+            else{
+                throw 'Expecting an else ":" operator';
+            }
         }
         if(this.op == ':'){
-            return [...this.left.ToWasm(), Opcode.else, ...this.right.ToWasm()];
+            return ;
         }
         return [...this.left.ToWasm(), ...this.right.ToWasm(), Opcode['f32_'+operatorsToWasm[this.op]]];
     }
