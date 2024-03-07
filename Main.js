@@ -4,14 +4,26 @@ Pow(5)
 `; 
 
 function Tokenizer(code){
+    function IsDigit(c){
+        return c>='0' && c<='9';
+    }
+
     function CreateLastToken(){
         if(split==false){
-            tokens.push(code.substring(start, i));
+            var value = code.substring(start, i);
+            var type = 'varname';
+            if(IsDigit(value[0])){
+                type = 'int';
+                if(value.includes('.')){
+                    type = 'float';
+                }
+            }
+            tokens.push({type, start, end:i, code, value});
         }
         split=true;
     }
 
-    const operators = '{}+-*/(),<>';
+    const punctuation = '?:{}+-*/(),<>';
     const whitespace = ' \t\n\r';
     var tokens = [];
     var split = true;
@@ -21,9 +33,9 @@ function Tokenizer(code){
         if(whitespace.includes(c)){
             CreateLastToken();
         }
-        else if(operators.includes(c)){
+        else if(punctuation.includes(c)){
             CreateLastToken();
-            tokens.push(c);
+            tokens.push({type:'punctuation', start:i, end:i+1, code, value:c});
         }
         else{
             if(split){
@@ -40,7 +52,7 @@ function SplitByComma(tokens){
     var start = 0;
     var values = [];
     for(var i=0;i<tokens.length;i++){
-        if(typeof tokens[i] == 'string' && tokens[i] == ','){
+        if(tokens[i].type == 'punctuation' && tokens[i].value == ','){
             values.push(tokens.slice(start, i));
             start=i+1;
         }
@@ -98,23 +110,20 @@ class Expression{
         const operatorGroups = [['?'], [':'], ['<', '>'], ['+', '-'], ['*', '/']];
 
         function EmitExpression(tokens){
-            function IsDigit(c){
-                return c>='0' && c<='9';
-            }
-    
+
             function TrySplit(operators){
                 for(var i=tokens.length-1;i>=0;i--){
                     var t = tokens[i];
-                    if(operators.includes(t)){
+                    if(t.type == 'punctuation' && operators.includes(t.value)){
                         var left = EmitExpression(tokens.slice(0, i));
                         var right = EmitExpression(tokens.slice(i+1));
-                        if(t == '?'){
+                        if(t.value == '?'){
                             return [...left, Opcode.if, Blocktype.f32, ...right, Opcode.end];
                         }
-                        if(t == ':'){
+                        if(t.value == ':'){
                             return [...left, Opcode.else, ...right];
                         }
-                        return [...left, ...right, Opcode['f32_'+operatorsToWasm[t]]];
+                        return [...left, ...right, Opcode['f32_'+operatorsToWasm[t.value]]];
                     }
                 }
                 return undefined;
@@ -141,18 +150,16 @@ class Expression{
 
             if(tokens.length == 1){
                 var t = tokens[0];
-                if(typeof t == 'string'){
-                    if(IsDigit(t[0])){
-                        return [Opcode.f32_const, ...ieee754(parseFloat(t))];
+                if(t.type == 'int' || t.type == 'float'){
+                    return [Opcode.f32_const, ...ieee754(parseFloat(t.value))];
+                }
+                else if(t.type == 'varname'){
+                    var parameter = parameters.find(p=>p.name == t.value);
+                    if(parameter){
+                        return [Opcode.get_local, ...unsignedLEB128(parameter.id)];
                     }
                     else{
-                        var parameter = parameters.find(p=>p.name == t);
-                        if(parameter){
-                            return [Opcode.get_local, ...unsignedLEB128(parameter.id)];
-                        }
-                        else{
-                            return Call(t);
-                        }
+                        return Call(t.value);
                     }
                 }
                 else{
@@ -162,8 +169,8 @@ class Expression{
             else if(tokens.length == 2){
                 var t1 = tokens[0];
                 var t2 = tokens[1];
-                if(typeof t1 == 'string' && !IsDigit(t1) && typeof t2 == 'object' && t2.braces == '()'){
-                    return [...GetArgs(t2.value), ...Call(t1)];
+                if(t1.type == 'varname'  && t2.type == '()'){
+                    return [...GetArgs(t2.value), ...Call(t1.value)];
                 }
             }
             else{
@@ -174,10 +181,10 @@ class Expression{
                     }
                 }
             }
+            console.log(tokens);
             throw "Unexpected expression:"+JSON.stringify(tokens);
         }
         return [...EmitExpression(this.tokens), Opcode.end];
-        
     }
     
 }
@@ -191,11 +198,11 @@ function Parse(tokens){
             var result = [];
             var start = i;
             for(;i<tokens.length;i++){
-                var open = braces.find(b=>b[0] == tokens[i]);
-                var close = braces.find(b=>b[1] == tokens[i]);
+                var open = braces.find(b=>b[0] == tokens[i].value);
+                var close = braces.find(b=>b[1] == tokens[i].value);
                 if(open){
                     i++;
-                    result.push({braces:open, value:ParseBraces(open)});
+                    result.push({type:open, value:ParseBraces(open)});
                 }
                 else if(close){
                     if(close == brace){
@@ -220,7 +227,7 @@ function Parse(tokens){
         var start = 0;
         var groups = [];
         for(var i=0;i<tokens.length;i++){
-            if(typeof tokens[i] == 'object' && tokens[i].braces == '{}'){
+            if(tokens[i].type == '{}'){
                 tokens[i].value = ParseGroups(tokens[i].value);
                 groups.push(tokens.slice(start, i+1));
                 start = i+1;
@@ -239,8 +246,8 @@ function Parse(tokens){
         var parameters = [];
         var id = 0;
         for(var t of splitTokens){
-            if(t.length == 1 && typeof t[0] == 'string'){
-                parameters.push(new Parameter(id, t[0]));
+            if(t.length == 1 && t[0].type == 'varname'){
+                parameters.push(new Parameter(id, t[0].value));
                 id++;
             }
             else{
@@ -255,20 +262,20 @@ function Parse(tokens){
         for(var i=0;i<groupedTokens.length;i++){
             var group = groupedTokens[i];
             var lastGroup = group[group.length-1];
-            if(typeof(lastGroup) == 'object' && lastGroup.braces == '{}'){
+            if(lastGroup.type == '{}'){
                 var _export = false;
                 var parameters = [];
                 var name;
                 var ii = 0;
-                if(typeof(group[ii]) == 'string' && group[ii] == 'export'){
+                if(group[ii].type == 'varname' && group[ii].value == 'export'){
                     _export = true;
                     ii++;
                 }
-                if(typeof(group[ii]) == 'string'){
-                    name = group[ii];
+                if(group[ii].type == 'varname'){
+                    name = group[ii].value;
                     ii++;
                 }
-                if(typeof(group[ii]) == 'object' && group[ii].braces == '()'){
+                if(group[ii].type == '()'){
                     parameters = ParseParameters(group[ii].value);
                     ii++;
                 }
