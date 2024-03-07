@@ -1,6 +1,6 @@
 var code = `
-Pow(count) { count > 0 ? Pow(count - 1) * 2 : 2 }
-Pow(5)
+factorial(n) { n < 2 ? 1 : factorial(n - 1) * n }
+factorial(10)
 `; 
 
 function Tokenizer(code){
