@@ -69,6 +69,10 @@ class Parameter{
         this.id = id;
         this.name = name;
     }
+
+    ToWasm(){
+        return [Opcode.get_local, ...unsignedLEB128(this.id)];
+    }
 }
 
 class Func{
@@ -92,13 +96,24 @@ class Func{
     }
 }
 
-class Expression{
-    constructor(tokens){
-        this.isExpression = true;
-        this.tokens = tokens;
+class Const{
+    constructor(value){
+        this.value = value;
     }
 
-    GetCodeBytes(parameters){
+    ToWasm(){
+        return [Opcode.f32_const, ...ieee754(parseFloat(this.value))];
+    }
+}
+
+class BinaryOp{
+    constructor(left, right, op){
+        this.left = left;
+        this.right = right;
+        this.op = op;
+    }
+
+    ToWasm(){
         const operatorsToWasm = {
             '+':'add',
             '-':'sub',
@@ -107,32 +122,56 @@ class Expression{
             '<':'lt',
             '>':'gt',
         };
+
+        if(this.op == '?'){
+            return [...this.left.ToWasm(), Opcode.if, Blocktype.f32, ...this.right.ToWasm(), Opcode.end];
+        }
+        if(this.op == ':'){
+            return [...this.left.ToWasm(), Opcode.else, ...this.right.ToWasm()];
+        }
+        return [...this.left.ToWasm(), ...this.right.ToWasm(), Opcode['f32_'+operatorsToWasm[this.op]]];
+    }
+}
+
+class Call{
+    constructor(func, args){
+        this.func = func;
+        this.args = args;
+    }
+
+    ToWasm(){
+        return [...this.args.map(a=>a.ToWasm()).flat(1), Opcode.call, ...unsignedLEB128(this.func.id)];
+    }
+}
+
+class Expression{
+    constructor(tokens){
+        this.isExpression = true;
+        this.tokens = tokens;
+    }
+
+    GetCodeBytes(parameters){
+        
         const operatorGroups = [['?'], [':'], ['<', '>'], ['+', '-'], ['*', '/']];
 
-        function EmitExpression(tokens){
+        function ExpressionTree(tokens){
 
             function TrySplit(operators){
                 for(var i=tokens.length-1;i>=0;i--){
                     var t = tokens[i];
                     if(t.type == 'punctuation' && operators.includes(t.value)){
-                        var left = EmitExpression(tokens.slice(0, i));
-                        var right = EmitExpression(tokens.slice(i+1));
-                        if(t.value == '?'){
-                            return [...left, Opcode.if, Blocktype.f32, ...right, Opcode.end];
-                        }
-                        if(t.value == ':'){
-                            return [...left, Opcode.else, ...right];
-                        }
-                        return [...left, ...right, Opcode['f32_'+operatorsToWasm[t.value]]];
+                        var left = ExpressionTree(tokens.slice(0, i));
+                        var right = ExpressionTree(tokens.slice(i+1));
+                        return new BinaryOp(left, right, t.value);
                     }
                 }
                 return undefined;
             }
     
-            function Call(name){
-                var funcID = functions.findIndex(f=>f.name == name);
-                if(funcID>=0){
-                    return [Opcode.call, ...unsignedLEB128(funcID)];
+            function GetCall(name, args){
+                var func = functions.find(f=>f.name == name);
+                if(func){
+                    return new Call(func, args);
                 }
                 else{
                     throw 'Cant find function or paramter: '+name;
@@ -143,7 +182,7 @@ class Expression{
                 var argExpressions = SplitByComma(tokens);
                 var output = [];
                 for(var a of argExpressions){
-                    output.push(...EmitExpression(a));
+                    output.push(ExpressionTree(a));
                 }
                 return output;
             }
@@ -151,15 +190,15 @@ class Expression{
             if(tokens.length == 1){
                 var t = tokens[0];
                 if(t.type == 'int' || t.type == 'float'){
-                    return [Opcode.f32_const, ...ieee754(parseFloat(t.value))];
+                    return new Const(t.value);
                 }
                 else if(t.type == 'varname'){
                     var parameter = parameters.find(p=>p.name == t.value);
                     if(parameter){
-                        return [Opcode.get_local, ...unsignedLEB128(parameter.id)];
+                        return parameter;
                     }
                     else{
-                        return Call(t.value);
+                        return GetCall(t.value, []);
                     }
                 }
                 else{
@@ -169,8 +208,8 @@ class Expression{
             else if(tokens.length == 2){
                 var t1 = tokens[0];
                 var t2 = tokens[1];
-                if(t1.type == 'varname'  && t2.type == '()'){
-                    return [...GetArgs(t2.value), ...Call(t1.value)];
+                if(t1.type == 'varname' && t2.type == '()'){
+                    return GetCall(t1.value, GetArgs(t2.value));
                 }
             }
             else{
@@ -181,10 +220,10 @@ class Expression{
                     }
                 }
             }
-            console.log(tokens);
             throw "Unexpected expression:"+JSON.stringify(tokens);
         }
-        return [...EmitExpression(this.tokens), Opcode.end];
+        var tree = ExpressionTree(this.tokens);
+        return [...tree.ToWasm(), Opcode.end];
     }
     
 }
@@ -311,6 +350,10 @@ function FindFunctions(tree){
 }
 FindFunctions(tree);
 functions.push(new Func(true, '__Init__', [], [tree[tree.length-1]]));
+
+for(var i=0;i<functions.length;i++){
+    functions[i].id = i;
+}
 
 wasmFuncs = functions.map(f=>f.ToWasm());
 var importObject = {env:{}};
